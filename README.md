@@ -1,0 +1,2 @@
+# Public_relations_web
+広報のweb系のプロジェクトをgithubで管理するといいかなー、とか思ってます
