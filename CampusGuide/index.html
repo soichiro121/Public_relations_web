@@ -4,16 +4,32 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>校内案内</title>
-  <!-- ライブラリ読み込み -->i
+
+  <!-- ライブラリ読み込み -->
   <script src="https://unpkg.com/html5-qrcode"></script>
   <script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <!-- Leaflet RotatedMarker プラグイン（古い手法用、今回は DivIcon を使うので任意） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-rotatedmarker/0.2.0/leaflet.rotatedMarker.min.js"></script>
+
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
     #map { width: 100%; height: 500px; margin-top: 10px; border: 1px solid #ccc; }
     #controls { margin-top: 10px; }
     .floor-button { margin-right: 10px; padding: 5px 10px; }
+    /* ログ出力（デバッグ用） */
+    #log {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      background: #f2f2f2;
+      height: 150px;
+      overflow-y: auto;
+      font-size: 14px;
+    }
+    /* センサー許可リクエストボタン */
+    #sensor-btn { margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -23,6 +39,9 @@
   <h3>現在地取得 (QRコードスキャン)</h3>
   <div id="reader" style="width: 300px;"></div>
   <p id="location-info">現在地: 未取得</p>
+
+  <!-- センサー許可リクエスト（iOSの場合必須） -->
+  <button id="sensor-btn" onclick="requestOrientationPermission()">センサー許可リクエスト</button>
 
   <!-- 目的地検索 -->
   <h3>目的地検索</h3>
@@ -45,14 +64,46 @@
   <!-- 地図表示エリア -->
   <div id="map"></div>
 
+  <!-- センサー関連のログ表示（スマホでのデバッグ用） -->
+  <div id="log">ログ出力:</div>
+
   <script>
-    // ① QRコードスキャン処理
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ログ出力用関数
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
+    function debugLog(message) {
+      console.log(message);
+      var logDiv = document.getElementById('log');
+      var p = document.createElement('p');
+      p.textContent = message;
+      logDiv.appendChild(p);
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       マップ初期設定（Leaflet.js, L.CRS.Simple）
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
+    let map = L.map('map', {
+      crs: L.CRS.Simple,
+      minZoom: -1,
+      maxZoom: 2
+    });
+    // 初期背景画像（ダミー画像）
+    const initialBounds = [[0, 0], [800, 800]];
+    L.imageOverlay('https://via.placeholder.com/800', initialBounds).addTo(map);
+    map.fitBounds(initialBounds);
+
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ① QRコードスキャン処理
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
     function onScanSuccess(decodedText) {
       try {
         let locationData = JSON.parse(decodedText);
         document.getElementById("location-info").innerText =
           `現在地: ${locationData.name} (X: ${locationData.x}, Y: ${locationData.y}, 階: ${locationData.floor})`;
         localStorage.setItem("currentLocation", JSON.stringify(locationData));
+        // QRコードで取得した座標に合わせ、ユーザーマーカー（DivIcon）を追加
+        addUserMarker(locationData.y, locationData.x);
       } catch (error) {
         console.error("QRコードのデータが不正です:", error);
       }
@@ -61,7 +112,9 @@
     let html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
     html5QrcodeScanner.render(onScanSuccess);
 
-    // ② 目的地検索（Fuse.js）
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ② 目的地検索（Fuse.js）
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
     const destinations = [
       { id: 1, name: "体育館", description: "体育館。", x: 50, y: 100, floor: 2 },
       { id: 2, name: "食堂", description: "食堂", x: 150, y: 200, floor: 1 },
@@ -93,8 +146,9 @@
       alert(`目的地: ${destination.name} に設定しました！`);
     }
 
-    // ③ 複雑なマップデータ（グラフ）の定義
-    // 各ノードは学校内マップ上のピクセル座標（x,y）と階数を想定
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ③ 学校内マップのグラフデータ定義
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
     const graphNodes = {
       "A": { id: "A", name: "校門", x: 600, y: 125, floor: 1, neighbors: [ { id: "B", cost: 8 }, { id: "D", cost: 5 } ] },
       "B": { id: "B", name: "廊下", x: 540, y: 125, floor: 1, neighbors: [ { id: "A", cost: 8 }, { id: "C", cost: 5 }, { id: "D", cost: 3 } ] },
@@ -105,7 +159,6 @@
       "G": { id: "G", name: "音楽室", x: 180, y: 100, floor: 5, neighbors: [ { id: "E", cost: 6 }, { id: "F", cost: 7 } ] }
     };
 
-    // 指定された位置（x, y, floor）に最も近いノードを返す
     function findNearestNode(pos) {
       let minDist = Infinity;
       let nearest = null;
@@ -122,7 +175,9 @@
       return nearest;
     }
 
-    // ④ A* アルゴリズム
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ④ A* アルゴリズムによるルート探索
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
     function aStarSearch(startNode, goalNode) {
       let openSet = new Set();
       openSet.add(startNode.id);
@@ -180,8 +235,9 @@
       return totalPath;
     }
 
-    // ⑤ 学校内マップの表示（Leaflet.js, L.CRS.Simple）
-    // 各階のマップ画像は例として、画像サイズ 500x500 のものとする
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ⑤ 地図表示（Leaflet.js, L.CRS.Simple）
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
     const floorImages = {
       1: { url: './floor1.png', bounds: [[0,0], [252,796]] },
       2: { url: './floor2.png', bounds: [[0,0], [223,751]] },
@@ -190,24 +246,11 @@
       5: { url: './floor5.png', bounds: [[0,0], [219,803]] }
     };
 
-    // マップ初期設定：L.CRS.Simple を使用
-    let map = L.map('map', {
-      crs: L.CRS.Simple,
-      minZoom: -1,
-      maxZoom: 2
-    });
-
-    // 現在のフロア用のイメージオーバーレイ
     let currentFloorOverlay = null;
-    // 現在のフロア
     let currentFloor = 1;
-
-    // ルート全体（複数階にまたがる場合も含む）をグローバル変数として保持
-    let routePath = null;
-    // ルート表示用レイヤーグループ
+    let routePath = null;  // 全体ルート（複数階対応）
     let routeLayerGroup = L.layerGroup().addTo(map);
 
-    // マップ更新：イメージオーバーレイとフロアに属するマーカー、ルートセグメントの更新
     function updateMapForFloor() {
       if (currentFloorOverlay) {
         map.removeLayer(currentFloorOverlay);
@@ -220,9 +263,7 @@
       updateRouteLine();
     }
 
-    // 現在のフロアに属するノードのマーカー表示
     function updateMapMarkers() {
-      // 既存のマーカーを削除（イメージオーバーレイ以外）
       map.eachLayer(function(layer) {
         if (layer.options && layer.options.pane === "markerPane") {
           map.removeLayer(layer);
@@ -237,18 +278,15 @@
       }
     }
 
-    // ルート（全体）から、現在のフロアに属するセグメントを抽出して表示
     function updateRouteLine() {
-      // 既存のルートレイヤーをクリア
       routeLayerGroup.clearLayers();
       if (!routePath) return;
 
-      // 現在のフロアに属する連続したノードのグループ（セグメント）を抽出
       let segments = [];
       let currentSegment = [];
       for (let node of routePath) {
         if (node.floor === currentFloor) {
-          currentSegment.push([node.y, node.x]);  // Leafletは [lat, lng] の順
+          currentSegment.push([node.y, node.x]);
         } else {
           if (currentSegment.length > 0) {
             segments.push(currentSegment);
@@ -256,11 +294,8 @@
           }
         }
       }
-      if (currentSegment.length > 0) {
-        segments.push(currentSegment);
-      }
+      if (currentSegment.length > 0) segments.push(currentSegment);
 
-      // セグメントごとにポリラインとして追加
       segments.forEach(segment => {
         if (segment.length >= 2) {
           L.polyline(segment, { color: 'blue' }).addTo(routeLayerGroup);
@@ -275,7 +310,9 @@
 
     updateMapForFloor(); // 初期フロア表示
 
-    // ⑥ 経路検索処理（グローバル変数 routePath に経路全体を保持）
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ⑥ 経路検索処理
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
     function findRoute() {
       let currentLocation = JSON.parse(localStorage.getItem("currentLocation"));
       let selectedDestination = JSON.parse(localStorage.getItem("selectedDestination"));
@@ -285,7 +322,6 @@
         return;
       }
 
-      // 現在地・目的地それぞれに対し、最も近いグラフ上のノードを取得
       let startNode = findNearestNode(currentLocation);
       let goalNode = findNearestNode(selectedDestination);
 
@@ -300,14 +336,93 @@
         return;
       }
 
-      // ルート全体は routePath に保持し、現在のフロアに属する部分だけを表示
       updateRouteLine();
 
-      // 出発点と目的地のノードにマーカーを追加（※常に表示）
       L.marker([startNode.y, startNode.x]).addTo(map)
         .bindPopup("出発点: " + startNode.name).openPopup();
       L.marker([goalNode.y, goalNode.x]).addTo(map)
         .bindPopup("目的地: " + goalNode.name);
+    }
+
+    /*q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q
+       ⑦ センサーによるユーザーマーカー回転表示
+       ※ センサー許可リクエストボタンで起動
+    q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q q */
+    // ここでは従来の png を使用せず、DivIcon(内蔵SVG)を用いる
+    var userMarker = null;
+
+    // ユーザーマーカー追加関数（SVG を内包する DivIcon）
+    function addUserMarker(lat, lng) {
+      // SVG内の <div> に id="user-arrow" を与える
+      var iconHTML = '<div id="user-arrow" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;">' +
+                     '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;">' +
+                     // 上向きの矢印ポリゴン。必要に応じて色や形状を変更
+                     '<polygon points="50,0 90,100 50,80 10,100" fill="red"/>' +
+                     '</svg>' +
+                     '</div>';
+      var divIcon = L.divIcon({
+        html: iconHTML,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15],
+        className: ''  // 不要なスタイルを排除
+      });
+      if (userMarker) {
+        map.removeLayer(userMarker);
+      }
+      userMarker = L.marker([lat, lng], {
+        icon: divIcon,
+        zIndexOffset: 10000
+      }).addTo(map);
+      // マーカーを最前面に
+      userMarker.bringToFront();
+      debugLog("ユーザーマーカー（DivIcon）を追加しました。（初期角度: 0°）");
+      map.setView([lat, lng]);
+    }
+
+    // センサーイベントハンドラ：DivIcon 内の #user-arrow の CSS transform を更新する
+    function handleOrientation(event) {
+      var heading;
+      if (event.webkitCompassHeading !== undefined) {
+        heading = event.webkitCompassHeading;
+      } else if (event.alpha !== null) {
+        heading = event.alpha;
+      } else {
+        heading = 0;
+      }
+      debugLog("センサーから取得したHeading: " + heading);
+
+      // 補正: (360 - heading) で回転方向を合わせる（必要に応じて調整）
+      var adjustedHeading = (360 - heading) % 360;
+      debugLog("補正後のHeading: " + adjustedHeading);
+
+      // DivIcon 内の #user-arrow を参照して直接 CSS 更新
+      var userArrow = document.getElementById("user-arrow");
+      if (userArrow) {
+        userArrow.style.transform = "rotate(" + adjustedHeading + "deg)";
+        userArrow.style.transformOrigin = "center center";
+        debugLog("DivIcon 内の矢印回転を更新: " + adjustedHeading);
+      } else {
+        debugLog("user-arrow 要素が取得できません");
+      }
+    }
+
+    // センサー許可リクエスト（iOS用）
+    function requestOrientationPermission() {
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission().then(function(response) {
+          if (response === 'granted') {
+            debugLog("センサー許可取得（iOS）");
+            window.addEventListener("deviceorientation", handleOrientation, false);
+          } else {
+            debugLog("センサーへのアクセス拒否");
+          }
+        }).catch(function(error) {
+          debugLog("エラー: " + error);
+        });
+      } else {
+        debugLog("センサー許可は不要な環境です");
+        window.addEventListener("deviceorientation", handleOrientation, false);
+      }
     }
   </script>
 </body>
