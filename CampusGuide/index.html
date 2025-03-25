@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>校内案内</title>
+  <!-- ライブラリ読み込み -->i
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #map { width: 100%; height: 500px; margin-top: 10px; border: 1px solid #ccc; }
+    #controls { margin-top: 10px; }
+    .floor-button { margin-right: 10px; padding: 5px 10px; }
+  </style>
+</head>
+<body>
+  <h2>校内案内</h2>
+
+  <!-- QRコードスキャンによる現在地取得 -->
+  <h3>現在地取得 (QRコードスキャン)</h3>
+  <div id="reader" style="width: 300px;"></div>
+  <p id="location-info">現在地: 未取得</p>
+
+  <!-- 目的地検索 -->
+  <h3>目的地検索</h3>
+  <input type="text" id="search" placeholder="目的地を検索..." oninput="searchDestination()">
+  <ul id="results"></ul>
+
+  <!-- ルート検索 -->
+  <h3>ルート検索</h3>
+  <button onclick="findRoute()">ルート検索</button>
+
+  <!-- フロア選択 -->
+  <div id="controls">
+    <button class="floor-button" onclick="changeFloor(1)">1階</button>
+    <button class="floor-button" onclick="changeFloor(2)">2階</button>
+    <button class="floor-button" onclick="changeFloor(3)">3階</button>
+    <button class="floor-button" onclick="changeFloor(4)">4階</button>
+    <button class="floor-button" onclick="changeFloor(5)">5階</button>
+  </div>
+
+  <!-- 地図表示エリア -->
+  <div id="map"></div>
+
+  <script>
+    // ① QRコードスキャン処理
+    function onScanSuccess(decodedText) {
+      try {
+        let locationData = JSON.parse(decodedText);
+        document.getElementById("location-info").innerText =
+          `現在地: ${locationData.name} (X: ${locationData.x}, Y: ${locationData.y}, 階: ${locationData.floor})`;
+        localStorage.setItem("currentLocation", JSON.stringify(locationData));
+      } catch (error) {
+        console.error("QRコードのデータが不正です:", error);
+      }
+    }
+
+    let html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
+    html5QrcodeScanner.render(onScanSuccess);
+
+    // ② 目的地検索（Fuse.js）
+    const destinations = [
+      { id: 1, name: "体育館", description: "体育館。", x: 50, y: 100, floor: 2 },
+      { id: 2, name: "食堂", description: "食堂", x: 150, y: 200, floor: 1 },
+      { id: 3, name: "図書館", description: "図書館", x: 80, y: 150, floor: 2 },
+      { id: 4, name: "音楽室", description: "音楽", x: 180, y: 100, floor: 5 },
+      { id: 5, name: "講堂", description: "講堂", x: 560, y: 160, floor: 1 }
+    ];
+
+    const fuse = new Fuse(destinations, {
+      keys: ["name", "description"],
+      threshold: 0.3
+    });
+
+    function searchDestination() {
+      const query = document.getElementById("search").value;
+      const results = fuse.search(query);
+      const resultList = document.getElementById("results");
+      resultList.innerHTML = "";
+      results.forEach(({ item }) => {
+        const li = document.createElement("li");
+        li.textContent = `${item.name} - ${item.description}`;
+        li.onclick = () => selectDestination(item);
+        resultList.appendChild(li);
+      });
+    }
+
+    function selectDestination(destination) {
+      localStorage.setItem("selectedDestination", JSON.stringify(destination));
+      alert(`目的地: ${destination.name} に設定しました！`);
+    }
+
+    // ③ 複雑なマップデータ（グラフ）の定義
+    // 各ノードは学校内マップ上のピクセル座標（x,y）と階数を想定
+    const graphNodes = {
+      "A": { id: "A", name: "校門", x: 600, y: 125, floor: 1, neighbors: [ { id: "B", cost: 8 }, { id: "D", cost: 5 } ] },
+      "B": { id: "B", name: "廊下", x: 540, y: 125, floor: 1, neighbors: [ { id: "A", cost: 8 }, { id: "C", cost: 5 }, { id: "D", cost: 3 } ] },
+      "C": { id: "C", name: "講堂", x: 560, y: 160, floor: 1, neighbors: [ { id: "B", cost: 5 }, { id: "D", cost: 4 } ] },
+      "D": { id: "D", name: "A階段 (1F)", x: 796, y: 252, floor: 1, neighbors: [ { id: "B", cost: 3 }, { id: "C", cost: 4 }, { id: "E", cost: 5 } ] },
+      "E": { id: "E", name: "A階段 (2F)", x: 80, y: 120, floor: 2, neighbors: [ { id: "D", cost: 5 }, { id: "F", cost: 8 }, { id: "G", cost: 6 } ] },
+      "F": { id: "F", name: "食堂", x: 150, y: 200, floor: 1, neighbors: [ { id: "E", cost: 8 }, { id: "G", cost: 7 } ] },
+      "G": { id: "G", name: "音楽室", x: 180, y: 100, floor: 5, neighbors: [ { id: "E", cost: 6 }, { id: "F", cost: 7 } ] }
+    };
+
+    // 指定された位置（x, y, floor）に最も近いノードを返す
+    function findNearestNode(pos) {
+      let minDist = Infinity;
+      let nearest = null;
+      for (let key in graphNodes) {
+        let node = graphNodes[key];
+        if (node.floor === pos.floor) {
+          let d = Math.abs(node.x - pos.x) + Math.abs(node.y - pos.y);
+          if (d < minDist) {
+            minDist = d;
+            nearest = node;
+          }
+        }
+      }
+      return nearest;
+    }
+
+    // ④ A* アルゴリズム
+    function aStarSearch(startNode, goalNode) {
+      let openSet = new Set();
+      openSet.add(startNode.id);
+      let cameFrom = {};
+      let gScore = {};
+      for (let key in graphNodes) { gScore[key] = Infinity; }
+      gScore[startNode.id] = 0;
+      let fScore = {};
+      for (let key in graphNodes) { fScore[key] = Infinity; }
+      fScore[startNode.id] = heuristic(startNode, goalNode);
+
+      while (openSet.size > 0) {
+        let currentId = null;
+        let lowestF = Infinity;
+        openSet.forEach(id => {
+          if (fScore[id] < lowestF) {
+            lowestF = fScore[id];
+            currentId = id;
+          }
+        });
+
+        if (currentId === goalNode.id) {
+          return reconstructPath(cameFrom, currentId);
+        }
+
+        openSet.delete(currentId);
+        let current = graphNodes[currentId];
+        for (let neighborInfo of current.neighbors) {
+          let neighborId = neighborInfo.id;
+          let tentativeG = gScore[currentId] + neighborInfo.cost;
+          if (tentativeG < gScore[neighborId]) {
+            cameFrom[neighborId] = currentId;
+            gScore[neighborId] = tentativeG;
+            fScore[neighborId] = tentativeG + heuristic(graphNodes[neighborId], goalNode);
+            openSet.add(neighborId);
+          }
+        }
+      }
+      return [];
+    }
+
+    function heuristic(node, goal) {
+      let dx = Math.abs(node.x - goal.x);
+      let dy = Math.abs(node.y - goal.y);
+      let df = Math.abs(node.floor - goal.floor) * 10;
+      return dx + dy + df;
+    }
+
+    function reconstructPath(cameFrom, currentId) {
+      let totalPath = [graphNodes[currentId]];
+      while (currentId in cameFrom) {
+        currentId = cameFrom[currentId];
+        totalPath.unshift(graphNodes[currentId]);
+      }
+      return totalPath;
+    }
+
+    // ⑤ 学校内マップの表示（Leaflet.js, L.CRS.Simple）
+    // 各階のマップ画像は例として、画像サイズ 500x500 のものとする
+    const floorImages = {
+      1: { url: './floor1.png', bounds: [[0,0], [252,796]] },
+      2: { url: './floor2.png', bounds: [[0,0], [223,751]] },
+      3: { url: './floor3.png', bounds: [[0,0], [219,768]] },
+      4: { url: './floor4.png', bounds: [[0,0], [197,733]] },
+      5: { url: './floor5.png', bounds: [[0,0], [219,803]] }
+    };
+
+    // マップ初期設定：L.CRS.Simple を使用
+    let map = L.map('map', {
+      crs: L.CRS.Simple,
+      minZoom: -1,
+      maxZoom: 2
+    });
+
+    // 現在のフロア用のイメージオーバーレイ
+    let currentFloorOverlay = null;
+    // 現在のフロア
+    let currentFloor = 1;
+
+    // ルート全体（複数階にまたがる場合も含む）をグローバル変数として保持
+    let routePath = null;
+    // ルート表示用レイヤーグループ
+    let routeLayerGroup = L.layerGroup().addTo(map);
+
+    // マップ更新：イメージオーバーレイとフロアに属するマーカー、ルートセグメントの更新
+    function updateMapForFloor() {
+      if (currentFloorOverlay) {
+        map.removeLayer(currentFloorOverlay);
+      }
+      let floorData = floorImages[currentFloor];
+      currentFloorOverlay = L.imageOverlay(floorData.url, floorData.bounds);
+      currentFloorOverlay.addTo(map);
+      map.fitBounds(floorData.bounds);
+      updateMapMarkers();
+      updateRouteLine();
+    }
+
+    // 現在のフロアに属するノードのマーカー表示
+    function updateMapMarkers() {
+      // 既存のマーカーを削除（イメージオーバーレイ以外）
+      map.eachLayer(function(layer) {
+        if (layer.options && layer.options.pane === "markerPane") {
+          map.removeLayer(layer);
+        }
+      });
+      for (let key in graphNodes) {
+        let node = graphNodes[key];
+        if (node.floor === currentFloor) {
+          L.marker([node.y, node.x]).addTo(map)
+            .bindPopup(`${node.name} (${node.floor}F)`);
+        }
+      }
+    }
+
+    // ルート（全体）から、現在のフロアに属するセグメントを抽出して表示
+    function updateRouteLine() {
+      // 既存のルートレイヤーをクリア
+      routeLayerGroup.clearLayers();
+      if (!routePath) return;
+
+      // 現在のフロアに属する連続したノードのグループ（セグメント）を抽出
+      let segments = [];
+      let currentSegment = [];
+      for (let node of routePath) {
+        if (node.floor === currentFloor) {
+          currentSegment.push([node.y, node.x]);  // Leafletは [lat, lng] の順
+        } else {
+          if (currentSegment.length > 0) {
+            segments.push(currentSegment);
+            currentSegment = [];
+          }
+        }
+      }
+      if (currentSegment.length > 0) {
+        segments.push(currentSegment);
+      }
+
+      // セグメントごとにポリラインとして追加
+      segments.forEach(segment => {
+        if (segment.length >= 2) {
+          L.polyline(segment, { color: 'blue' }).addTo(routeLayerGroup);
+        }
+      });
+    }
+
+    function changeFloor(floor) {
+      currentFloor = floor;
+      updateMapForFloor();
+    }
+
+    updateMapForFloor(); // 初期フロア表示
+
+    // ⑥ 経路検索処理（グローバル変数 routePath に経路全体を保持）
+    function findRoute() {
+      let currentLocation = JSON.parse(localStorage.getItem("currentLocation"));
+      let selectedDestination = JSON.parse(localStorage.getItem("selectedDestination"));
+
+      if (!currentLocation || !selectedDestination) {
+        alert("現在地または目的地が設定されていません！");
+        return;
+      }
+
+      // 現在地・目的地それぞれに対し、最も近いグラフ上のノードを取得
+      let startNode = findNearestNode(currentLocation);
+      let goalNode = findNearestNode(selectedDestination);
+
+      if (!startNode || !goalNode) {
+        alert("適切なノードが見つかりませんでした。");
+        return;
+      }
+
+      routePath = aStarSearch(startNode, goalNode);
+      if (routePath.length === 0) {
+        alert("ルートが見つかりませんでした！");
+        return;
+      }
+
+      // ルート全体は routePath に保持し、現在のフロアに属する部分だけを表示
+      updateRouteLine();
+
+      // 出発点と目的地のノードにマーカーを追加（※常に表示）
+      L.marker([startNode.y, startNode.x]).addTo(map)
+        .bindPopup("出発点: " + startNode.name).openPopup();
+      L.marker([goalNode.y, goalNode.x]).addTo(map)
+        .bindPopup("目的地: " + goalNode.name);
+    }
+  </script>
+</body>
+</html>
